@@ -46,7 +46,7 @@ interface IART {
     ) external;
 
     function rewind(
-        uint16 maliciousUser,
+        uint16 target,
         uint256[] calldata xs,
         uint256[] calldata ys,
         bytes[] calldata history
@@ -296,25 +296,25 @@ contract ART is ERC165, IART {
     // =============== MODERATION: REWIND ===============
 
     function rewind(
-        uint16 maliciousUser,
+        uint16 target,
         uint256[] calldata xs,
         uint256[] calldata ys,
         bytes[] calldata history
     ) external override onlyOwner {
         require(xs.length == ys.length && ys.length == history.length, "Array mismatch");
 
-        blacklisted[maliciousUser] = true;
-        emit UserBlacklisted(maliciousUser);
+        blacklisted[target] = true;
+        emit UserBlacklisted(target);
 
         uint256 reverts = 0;
         for (uint256 i = 0; i < xs.length; i++) {
             require(xs[i] < width && ys[i] < height, "Out of bounds");
             Unit storage top = canvas[xs[i]][ys[i]];
-            if (top.author != maliciousUser) {
+            if (top.author != target) {
                 continue;
             }
 
-            (bool found, Unit memory newState) = _findReplacement(top, maliciousUser, history[i]);
+            (bool found, Unit memory newState) = _findReplacement(top, target, history[i]);
             if (!found) {
                 continue;
             }
@@ -329,13 +329,13 @@ contract ART is ERC165, IART {
         }
 
         if (reverts > 0) {
-            emit UserReverted(maliciousUser);
+            emit UserReverted(target);
         }
     }
 
     function _findReplacement(
         Unit storage top,
-        uint16 maliciousUser,
+        uint16 target,
         bytes calldata encodedHistory
     ) internal view returns (bool, Unit memory) {
         uint256 recordSize = 29;
@@ -355,7 +355,7 @@ contract ART is ERC165, IART {
         for (uint256 i = 1; i < count; i++) {
             bytes memory rec = _sliceBytes(encodedHistory, i*recordSize, recordSize);
             (uint24 v, uint16 a, uint32 l, bytes20 linkHash) = _decodeRecord(rec);
-            if (a != maliciousUser) {
+            if (a != target) {
                 return (true, Unit(v,a,l,linkHash));
             }
         }
