@@ -23,13 +23,13 @@ It is **not** ERC-20 because:
 - Artifacts can be **frozen** permanently via edit limits or manual control.
 - A **moderation system** allows the owner to **rewind** edits from malicious actors.
 
-### **Why ART?**
+### **Why use ART?**
 
 ART introduces a **new class of on-chain artifacts**:  
-✅ **Modifiable yet immutable in history** (every change is stored).  
-✅ **Ownable & transferable** (can be exchanged like digital collectibles).  
-✅ **Collaborative & permissionable** (customizable editing rights).  
-✅ **Self-contained** (does not rely on external registries).
+- **Modifiable yet immutable in history** (every change is stored).  
+- **Ownable & transferable** (can be exchanged like digital collectibles).  
+- **Collaborative & permissionable** (customizable editing rights).  
+- **Self-contained** (does not rely on external registries).
 
 ### **What Can You Build?**
 
