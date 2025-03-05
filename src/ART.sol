@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.17;
+pragma solidity ^0.8.23;
 
 /**
 ART: Artifact / Autonomous Repository Token
-    - Has a 2D grid ("units") of size (width x height).
-    - Each "unit" tracks { value, author, layer, link } in 29 bytes.
-    - A global “delta” tallies net modifications across all units.
+    - Has a 2D grid ("tiles") of size (width x height).
+    - Each "tile" tracks { value, author, layer, link } in 29 bytes.
+    - A global “delta” tallies net modifications across all tiles.
     - “omega” for auto-freeze if delta >= omega.
     - “creator” sets config, can freeze, can revert malicious edits.
     - “exclusive” means only creator can edit; otherwise open to all except blacklisted.
     - “cred” mapping tracks user’s cumulative contribution. 
-      Earn cred on each edit, reduced by a linear decay function per unit: 
+      Earn cred on each edit, reduced by a linear decay function per tile: 
       award = max(0, BASE_CRED - layer * decay).
 
 HINT:   Looping over a large area in the constructor can easily hit gas limits.
@@ -19,51 +19,6 @@ HINT:   Looping over a large area in the constructor can easily hit gas limits.
 */
 
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
-
-///////////////////
-/// IART Interface
-///////////////////
-
-interface IART {
-    event Update(
-        uint256 indexed x,
-        uint256 indexed y,
-        uint24 value,
-        uint16 author,
-        uint32 layer,
-        bytes20 prevLink
-    );
-
-    event Frozen(uint256 finalDelta);
-    event UserBlacklisted(uint16 userId);
-    event UserReverted(uint16 userId);
-
-    function edit(
-        uint256[] calldata xs,
-        uint256[] calldata ys,
-        uint24[] calldata values,
-        bytes20[] calldata prevLinks
-    ) external;
-
-    function rewind(
-        uint16 target,
-        uint256[] calldata xs,
-        uint256[] calldata ys,
-        bytes[] calldata history
-    ) external;
-
-    function freeze() external;
-    function isFrozen() external view returns (bool);
-
-    function getUnit(uint256 x, uint256 y) external view returns (
-        uint24 value,
-        uint16 author,
-        uint32 layer,
-        bytes20 link
-    );
-
-    function supportsInterface(bytes4 interfaceId) external view returns (bool);
-}
 
 ///////////////////
 /// ART Contract
@@ -75,7 +30,7 @@ contract ART is ERC165, IART {
     // =========================
 
     /**
-     * @notice Each unit on the artifact’s 2D grid.
+     * @notice Each tile on the artifact’s 2D grid.
      *  Occupies 29 bytes in a 32-byte slot (3 leftover bytes).
      *
      *  - value(3 bytes)
@@ -83,7 +38,7 @@ contract ART is ERC165, IART {
      *  - layer(4 bytes)
      *  - link(20 bytes)
      */
-    struct Unit {
+    struct Tile {
         uint24 value;   // e.g. RGB color
         uint16 author;  // user ID
         uint32 layer;   // incremental edits count
@@ -115,7 +70,7 @@ contract ART is ERC165, IART {
     /** @notice Whether the artifact is frozen. */
     bool public frozen;
 
-    /** @notice Net modifications across all units. */
+    /** @notice Net modifications across all tiles. */
     uint256 public delta;
 
     /** @notice If true => only owner/artists can edit. If false => open to all except blacklisted. */
@@ -184,8 +139,8 @@ contract ART is ERC165, IART {
         // WARNING: This can revert for too large area (if EVM gas limit reached).
         for (uint256 x = 0; x < _width; x++) {
             for (uint256 y = 0; y < _height; y++) {
-                // store default unit. value=0, author=cId, layer=0, link=0.
-                canvas[x][y] = Unit(0, cId, 0, bytes20(0));
+                // store default tile. value=0, author=cId, layer=0, link=0.
+                canvas[x][y] = Tile(0, cId, 0, bytes20(0));
             }
         }
     }
@@ -242,7 +197,7 @@ contract ART is ERC165, IART {
     // =============== CORE LOGIC: EDIT ===============
 
     /**
-     * @notice Edits multiple units.
+     * @notice Edits multiple tiles.
      * @dev If exclusive=true => only owner + isArtist can edit. Otherwise open to all except blacklisted.
      */
     function edit(
@@ -375,12 +330,20 @@ contract ART is ERC165, IART {
     }
 
 
-    // =============== VIEW ===============
+    // =============== VIEW FUNCTIONS ===============
 
-    function getUnit(uint256 x, uint256 y)
+    /**
+     * @notice Retrieves the details of a specific tile.
+     * @param x X-coordinate of the tile.
+     * @param y Y-coordinate of the tile.
+     * @return value The 24-bit color or data value.
+     * @return author The user ID of the last editor.
+     * @return layer The number of times the tile has been modified.
+     * @return link The historical reference link for previous states.
+     */
+    function getTile(uint256 x, uint256 y)
         external
         view
-        override
         returns (
             uint24 value,
             uint16 author,
@@ -389,8 +352,26 @@ contract ART is ERC165, IART {
         )
     {
         require(x < width && y < height, "Out of bounds");
-        Unit memory u = canvas[x][y];
-        return (u.value, u.author, u.layer, u.link);
+        Tile memory t = canvas[x][y];
+        return (t.value, t.author, t.layer, t.link);
+    }
+
+    /**
+     * @notice Retrieves the entire canvas state in a single call.
+     * @dev This is gas-heavy and should primarily be used off-chain.
+     * @return tiles An array of all stored tiles in row-major order.
+     */
+    function getCanvas() external view returns (Tile[] memory) {
+        Tile[] memory tiles = new Tile[](area);
+        uint256 index = 0;
+
+        for (uint256 y = 0; y < height; y++) {
+            for (uint256 x = 0; x < width; x++) {
+                tiles[index] = canvas[x][y];
+                index++;
+            }
+        }
+        return tiles;
     }
 
     // =============== ERC165 ===============
