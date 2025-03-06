@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
+import {ERC165} from "../lib/ERC165.sol";
+import {IART} from "./IART.sol";
+
 /**
 ART: Artifact / Autonomous Repository Token
     - Has a 2D grid ("tiles") of size (width x height).
@@ -17,8 +20,6 @@ HINT:   Looping over a large area in the constructor can easily hit gas limits.
         This is a feature, not a bug. If the limitations of the chain are reached
         before initializing the art, you know your art is too big for this chain.
 */
-
-import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 
 ///////////////////
 /// ART Contract
@@ -48,6 +49,12 @@ contract ART is ERC165, IART {
     // =========================
     //     STORAGE
     // =========================
+
+    /** @notice The title of this artifact. */
+    string public title;
+
+    /** @notice Caption is separate from title, if necessary as a descriptor. */
+    string public caption;
 
     /** @notice The original deployer’s address. */
     address public immutable creator;
@@ -82,10 +89,10 @@ contract ART is ERC165, IART {
     /** @notice The base cred for brand-new edits if oldEdits=0. */
     uint256 public constant BASE_CRED = 100;
 
-    // (x, y) => Unit
-    mapping(uint256 => mapping(uint256 => Unit)) public canvas;
+    // (x, y) => Tile
+    mapping(uint256 => mapping(uint256 => Tile)) public canvas;
 
-    /** @notice user ID => total cred earned */
+    /** @notice user ID => total cred earned. */
     mapping(uint16 => uint256) public cred;
 
     // =============== USER SYSTEM ===============
@@ -111,16 +118,18 @@ contract ART is ERC165, IART {
      * @param _width The artifact’s width
      * @param _height The artifact’s height
      * @param _omega If delta >= omega => auto-freeze
-     * @param _exclusive If true => only owner + artists can edit
      * @param _decay linear decay factor for cred awarding
+     * @param _exclusive If true => only owner + artists can edit
+     * @param _title The string title of the artifact
      * @dev For demonstration, we attempt to seed the entire canvas, which might revert for large area.
      */
     constructor(
         uint256 _width,
         uint256 _height,
         uint256 _omega,
+        uint256 _decay,
         bool _exclusive,
-        uint256 _decay
+        string _title
     ) {
         creator = msg.sender; // purely informational
         owner = msg.sender;   // actual control
