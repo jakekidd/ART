@@ -9,10 +9,10 @@ interface IART {
     event Update(
         uint256 indexed x,
         uint256 indexed y,
-        uint24 value,
-        uint16 author,
-        uint32 layer,
-        bytes20 prevLink
+        uint80  value,
+        uint16  author,
+        uint32  layer,
+        bytes16 link
     );
 
     event Frozen(uint256 finalDelta);
@@ -22,8 +22,8 @@ interface IART {
     function edit(
         uint256[] calldata xs,
         uint256[] calldata ys,
-        uint24[] calldata values,
-        bytes20[] calldata prevLinks
+        uint80[] calldata values,
+        bytes16[] calldata prevLinks
     ) external;
 
     function rewind(
@@ -36,12 +36,13 @@ interface IART {
     function freeze() external;
     function isFrozen() external view returns (bool);
 
-    function getUnit(uint256 x, uint256 y) external view returns (
-        uint24 value,
+    function getTile(uint256 x, uint256 y) external view returns (
+        uint80 value,
         uint16 author,
         uint32 layer,
-        bytes20 link
+        bytes16 link
     );
+    function getCanvas() external view returns (Tile[] memory);
 
     function supportsInterface(bytes4 interfaceId) external view returns (bool);
 }

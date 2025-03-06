@@ -7,18 +7,16 @@ import {IART} from "./IART.sol";
 /**
 ART: Artifact / Autonomous Repository Token
     - Has a 2D grid ("tiles") of size (width x height).
-    - Each "tile" tracks { value, author, layer, link } in 29 bytes.
+    - Each "Tile" is packed into exactly 32 bytes:
+         link:   16 bytes (128 bits)
+         value:  10 bytes (80 bits)
+         layer:   4 bytes (32 bits)
+         author:  2 bytes (16 bits)
     - A global “delta” tallies net modifications across all tiles.
     - “omega” for auto-freeze if delta >= omega.
     - “creator” sets config, can freeze, can revert malicious edits.
     - “exclusive” means only creator can edit; otherwise open to all except blacklisted.
-    - “cred” mapping tracks user’s cumulative contribution. 
-      Earn cred on each edit, reduced by a linear decay function per tile: 
-      award = max(0, BASE_CRED - layer * decay).
-
-HINT:   Looping over a large area in the constructor can easily hit gas limits.
-        This is a feature, not a bug. If the limitations of the chain are reached
-        before initializing the art, you know your art is too big for this chain.
+    - “cred” tracks cumulative user contribution. Award = max(0, BASE_CRED - layer*decay).
 */
 
 ///////////////////
@@ -32,18 +30,14 @@ contract ART is ERC165, IART {
 
     /**
      * @notice Each tile on the artifact’s 2D grid.
-     *  Occupies 29 bytes in a 32-byte slot (3 leftover bytes).
-     *
-     *  - value(3 bytes)
-     *  - author(2 bytes)
-     *  - layer(4 bytes)
-     *  - link(20 bytes)
+     *  32 bytes per slot:
+     *    | link(16b) | value(10b) | layer(4b) | author(2b) |
      */
     struct Tile {
-        uint24 value;   // e.g. RGB color
-        uint16 author;  // user ID
-        uint32 layer;   // incremental edits count
-        bytes20 link;   // previous state reference hash
+        bytes16 link;   // historical reference (truncated from 20 to 16 bytes)
+        uint80  value;  // color/data (80 bits = up to 10 bytes)
+        uint32  layer;  // incremental edit counter
+        uint16  author; // user ID (1..65535)
     }
 
     // =========================
@@ -53,13 +47,13 @@ contract ART is ERC165, IART {
     /** @notice The title of this artifact. */
     string public title;
 
-    /** @notice Caption is separate from title, if necessary as a descriptor. */
+    /** @notice Caption is separate from title, if needed. */
     string public caption;
 
-    /** @notice The original deployer’s address. */
+    /** @notice The original deployer’s address (informational). */
     address public immutable creator;
 
-    /** @notice The current owner with exclusive privileges (can freeze, rewind, manage artists). */
+    /** @notice The current owner (can freeze, rewind, manage artists). */
     address public owner;
 
     /** @notice The artifact’s width. */
@@ -71,7 +65,7 @@ contract ART is ERC165, IART {
     /** @notice The total area = width * height. */
     uint256 public immutable area;
 
-    /** @notice If delta >= omega => auto-freeze. 0 means no auto-freeze. */
+    /** @notice If delta >= omega => auto-freeze (0 => no auto-freeze). */
     uint256 public immutable omega;
 
     /** @notice Whether the artifact is frozen. */
@@ -80,13 +74,13 @@ contract ART is ERC165, IART {
     /** @notice Net modifications across all tiles. */
     uint256 public delta;
 
-    /** @notice If true => only owner/artists can edit. If false => open to all except blacklisted. */
+    /** @notice If true => only owner/artists can edit. Otherwise open except blacklisted. */
     bool public exclusive;
 
     /** @notice The linear decay factor for cred awarding. */
     uint256 public immutable decay;
 
-    /** @notice The base cred for brand-new edits if oldEdits=0. */
+    /** @notice The base cred for a brand-new edit (layer=0). */
     uint256 public constant BASE_CRED = 100;
 
     // (x, y) => Tile
@@ -96,20 +90,15 @@ contract ART is ERC165, IART {
     mapping(uint16 => uint256) public cred;
 
     // =============== USER SYSTEM ===============
-
-    /** @notice address => user ID (1..65535). 0 means unregistered. */
+    /** @notice address => user ID (1..65535). 0 => unregistered. */
     mapping(address => uint16) public userToId;
-
     /** @notice user ID => address. */
     mapping(uint16 => address) public idToUser;
-
-    /** @notice next user ID to assign. If we reach 65535, new users are blocked. */
+    /** @notice next user ID to assign. */
     uint16 public nextUserId = 1;
-
-    /** @notice blacklisted user IDs => malicious/no further edits. */
+    /** @notice blacklisted user IDs => no further edits. */
     mapping(uint16 => bool) public blacklisted;
-
-    /** @notice set of addresses that can edit if exclusive=true. (owner is always allowed) */
+    /** @notice allowed artists if exclusive=true. (owner is always allowed) */
     mapping(address => bool) public isArtist;
 
     // =============== CONSTRUCTOR ===============
@@ -121,7 +110,6 @@ contract ART is ERC165, IART {
      * @param _decay linear decay factor for cred awarding
      * @param _exclusive If true => only owner + artists can edit
      * @param _title The string title of the artifact
-     * @dev For demonstration, we attempt to seed the entire canvas, which might revert for large area.
      */
     constructor(
         uint256 _width,
@@ -129,7 +117,7 @@ contract ART is ERC165, IART {
         uint256 _omega,
         uint256 _decay,
         bool _exclusive,
-        string _title
+        string memory _title
     ) {
         creator = msg.sender; // purely informational
         owner = msg.sender;   // actual control
@@ -140,16 +128,16 @@ contract ART is ERC165, IART {
         omega = _omega;
         exclusive = _exclusive;
         decay = _decay;
+        title = _title;
 
         // Attempt to register the creator (userId=1)
         uint16 cId = _registerUser(msg.sender);
 
-        // Pre-populate the entire canvas, setting default values.
-        // WARNING: This can revert for too large area (if EVM gas limit reached).
+        // Pre-populate the entire canvas. May revert if area is too large for gas.
         for (uint256 x = 0; x < _width; x++) {
             for (uint256 y = 0; y < _height; y++) {
-                // store default tile. value=0, author=cId, layer=0, link=0.
-                canvas[x][y] = Tile(0, cId, 0, bytes20(0));
+                // Default tile: link=0, value=0, layer=0, author=cId
+                canvas[x][y] = Tile(bytes16(0), 0, 0, cId);
             }
         }
     }
@@ -177,7 +165,6 @@ contract ART is ERC165, IART {
 
     /**
      * @notice Transfer ownership to a new address.
-     * @param newOwner The address that will own this contract.
      */
     function transfer(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Zero address invalid");
@@ -187,17 +174,14 @@ contract ART is ERC165, IART {
     // =============== MODERATION: ARTISTS ===============
 
     /**
-     * @notice Toggles or sets the exclusive mode.
-     * @param _exclusive if true => only owner + artists can edit.
+     * @notice Toggles or sets exclusive mode. If true => only owner + artists can edit.
      */
     function setExclusive(bool _exclusive) external onlyOwner {
         exclusive = _exclusive;
     }
 
     /**
-     * @notice Set or unset an address as an artist.
-     * @param user the address to set
-     * @param allowed whether user is an approved artist
+     * @notice Set or unset an address as an artist (allowed to edit if exclusive=true).
      */
     function setArtist(address user, bool allowed) external onlyOwner {
         isArtist[user] = allowed;
@@ -206,21 +190,27 @@ contract ART is ERC165, IART {
     // =============== CORE LOGIC: EDIT ===============
 
     /**
-     * @notice Edits multiple tiles.
-     * @dev If exclusive=true => only owner + isArtist can edit. Otherwise open to all except blacklisted.
+     * @notice Edits multiple tiles. 
+     * @dev If exclusive=true => only owner + isArtist can edit; else all except blacklisted.
+     * @param xs The x-coordinates of the tiles to edit
+     * @param ys The y-coordinates of the tiles to edit
+     * @param values The new value (80 bits) for each tile
+     * @param prevLinks The new link (16 bytes) for each tile
      */
     function edit(
         uint256[] calldata xs,
         uint256[] calldata ys,
-        uint24[] calldata values,
-        bytes20[] calldata prevLinks
+        uint80[] calldata values,
+        bytes16[] calldata prevLinks
     ) external override notFrozen canEdit {
-        // verify user
+        // register user if needed
         uint16 userId = _registerUser(msg.sender);
         require(!blacklisted[userId], "User blacklisted");
 
         require(
-            xs.length == ys.length && ys.length == values.length && values.length == prevLinks.length,
+            xs.length == ys.length &&
+            ys.length == values.length &&
+            values.length == prevLinks.length,
             "Array mismatch"
         );
 
@@ -228,14 +218,14 @@ contract ART is ERC165, IART {
         for (uint256 i = 0; i < xs.length; i++) {
             require(xs[i] < width && ys[i] < height, "Out of bounds");
 
-            Unit storage u = canvas[xs[i]][ys[i]];
-            uint32 oldEdits = u.layer;
+            Tile storage t = canvas[xs[i]][ys[i]];
+            uint32 oldEdits = t.layer;
 
-            // set new state
-            u.value = values[i];
-            u.author = userId;
-            u.layer = oldEdits + 1;
-            u.link = prevLinks[i];
+            // update tile
+            t.link = prevLinks[i];
+            t.value = values[i];
+            t.layer = oldEdits + 1;
+            t.author = userId;
 
             // linear decay awarding cred
             uint256 decAmount = oldEdits * decay;
@@ -246,7 +236,7 @@ contract ART is ERC165, IART {
             cred[userId] += award;
 
             changes++;
-            emit Update(xs[i], ys[i], values[i], userId, u.layer, prevLinks[i]);
+            emit Update(xs[i], ys[i], t.value, t.author, t.layer, t.link);
         }
 
         delta += changes;
@@ -259,6 +249,15 @@ contract ART is ERC165, IART {
 
     // =============== MODERATION: REWIND ===============
 
+    /**
+     * @notice Blacklist a user and revert their edits using an off-chain "history" record.
+     * @param target The user ID to blacklist
+     * @param xs The x-coordinates to attempt rewinding
+     * @param ys The y-coordinates to attempt rewinding
+     * @param history A sequence of 32-byte records (concatenated) for each tile.
+     *                Each record stores { link(16b), value(80b), layer(32b), author(16b) }
+     *                from newest to older states.
+     */
     function rewind(
         uint16 target,
         uint256[] calldata xs,
@@ -273,23 +272,23 @@ contract ART is ERC165, IART {
         uint256 reverts = 0;
         for (uint256 i = 0; i < xs.length; i++) {
             require(xs[i] < width && ys[i] < height, "Out of bounds");
-            Unit storage top = canvas[xs[i]][ys[i]];
+            Tile storage top = canvas[xs[i]][ys[i]];
             if (top.author != target) {
-                continue;
+                continue; // tile not by the blacklisted user
             }
 
-            (bool found, Unit memory newState) = _findReplacement(top, target, history[i]);
+            (bool found, Tile memory newState) = _findReplacement(top, target, history[i]);
             if (!found) {
                 continue;
             }
             // revert to newState
-            top.value = newState.value;
-            top.author = newState.author;
-            top.layer = newState.layer;
             top.link = newState.link;
+            top.value = newState.value;
+            top.layer = newState.layer;
+            top.author = newState.author;
 
             reverts++;
-            emit Update(xs[i], ys[i], newState.value, newState.author, newState.layer, newState.link);
+            emit Update(xs[i], ys[i], top.value, top.author, top.layer, top.link);
         }
 
         if (reverts > 0) {
@@ -297,39 +296,56 @@ contract ART is ERC165, IART {
         }
     }
 
+    /**
+     * @dev Internal function to scan a tile's concatenated history,
+     *      searching for the first older record whose `author != target`.
+     */
     function _findReplacement(
-        Unit storage top,
+        Tile storage top,
         uint16 target,
         bytes calldata encodedHistory
-    ) internal view returns (bool, Unit memory) {
-        uint256 recordSize = 29;
+    ) internal view returns (bool, Tile memory) {
+        // each record is exactly 32 bytes: link(16b) + value(10b) + layer(4b) + author(2b)
+        uint256 recordSize = 32;
         uint256 totalLen = encodedHistory.length;
         if (totalLen % recordSize != 0) {
-            return (false, Unit(0,0,0,bytes20(0)));
+            return (false, Tile(bytes16(0), 0, 0, 0));
         }
         uint256 count = totalLen / recordSize;
 
+        // 1) The first record in `encodedHistory` must match the current tile
         {
             bytes memory firstRec = _sliceBytes(encodedHistory, 0, recordSize);
-            (uint24 val, uint16 aut, uint32 lay, bytes20 lk) = _decodeRecord(firstRec);
-            if (lk != top.link || val != top.value || aut != top.author || lay != top.layer) {
-                return (false, Unit(0,0,0,bytes20(0)));
+            (bytes16 lk, uint80 val, uint32 lay, uint16 aut) = _decodeRecord(firstRec);
+            // If it doesn't match the on-chain tile, there's an integrity mismatch
+            if (
+                lk != top.link ||
+                val != top.value ||
+                lay != top.layer ||
+                aut != top.author
+            ) {
+                return (false, Tile(bytes16(0), 0, 0, 0));
             }
         }
+
+        // 2) Scan older records (index=1..count-1), looking for the first with different author
         for (uint256 i = 1; i < count; i++) {
-            bytes memory rec = _sliceBytes(encodedHistory, i*recordSize, recordSize);
-            (uint24 v, uint16 a, uint32 l, bytes20 linkHash) = _decodeRecord(rec);
-            if (a != target) {
-                return (true, Unit(v,a,l,linkHash));
+            bytes memory rec = _sliceBytes(encodedHistory, i * recordSize, recordSize);
+            (bytes16 lk2, uint80 val2, uint32 lay2, uint16 aut2) = _decodeRecord(rec);
+
+            if (aut2 != target) {
+                // Found a prior state not authored by `target`. Rewind to that.
+                return (true, Tile(lk2, val2, lay2, aut2));
             }
         }
-        return (false, Unit(0,0,0,bytes20(0)));
+
+        // No older record belongs to someone else => can't revert
+        return (false, Tile(bytes16(0), 0, 0, 0));
     }
 
     // =============== MODERATION: FREEZE ===============
 
-    function freeze() external override {
-        require(msg.sender == owner, "Not owner");
+    function freeze() external override onlyOwner {
         frozen = true;
         emit Frozen(delta);
     }
@@ -338,26 +354,20 @@ contract ART is ERC165, IART {
         return frozen;
     }
 
-
     // =============== VIEW FUNCTIONS ===============
 
     /**
      * @notice Retrieves the details of a specific tile.
-     * @param x X-coordinate of the tile.
-     * @param y Y-coordinate of the tile.
-     * @return value The 24-bit color or data value.
-     * @return author The user ID of the last editor.
-     * @return layer The number of times the tile has been modified.
-     * @return link The historical reference link for previous states.
      */
     function getTile(uint256 x, uint256 y)
         external
         view
+        override
         returns (
-            uint24 value,
-            uint16 author,
-            uint32 layer,
-            bytes20 link
+            uint80  value,
+            uint16  author,
+            uint32  layer,
+            bytes16 link
         )
     {
         require(x < width && y < height, "Out of bounds");
@@ -366,14 +376,11 @@ contract ART is ERC165, IART {
     }
 
     /**
-     * @notice Retrieves the entire canvas state in a single call.
-     * @dev This is gas-heavy and should primarily be used off-chain.
-     * @return tiles An array of all stored tiles in row-major order.
+     * @notice Retrieves the entire canvas in a single call (gas-heavy).
      */
     function getCanvas() external view returns (Tile[] memory) {
         Tile[] memory tiles = new Tile[](area);
         uint256 index = 0;
-
         for (uint256 y = 0; y < height; y++) {
             for (uint256 x = 0; x < width; x++) {
                 tiles[index] = canvas[x][y];
@@ -385,19 +392,25 @@ contract ART is ERC165, IART {
 
     // =============== ERC165 ===============
 
-    function supportsInterface(bytes4 interfaceId) public view override(ERC165, IART) returns (bool) {
-        return
-            interfaceId == type(IART).interfaceId ||
-            super.supportsInterface(interfaceId);
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC165, IART)
+        returns (bool)
+    {
+        return interfaceId == type(IART).interfaceId || super.supportsInterface(interfaceId);
     }
 
     // =============== INTERNAL UTILS ===============
 
-    function _sliceBytes(bytes calldata data, uint256 start, uint256 length)
-        internal
-        pure
-        returns (bytes memory)
-    {
+    /**
+     * @dev Extracts a slice from `data[start .. start+length-1]` into a new bytes array.
+     */
+    function _sliceBytes(
+        bytes calldata data,
+        uint256 start,
+        uint256 length
+    ) internal pure returns (bytes memory) {
         bytes memory temp = new bytes(length);
         for (uint256 i = 0; i < length; i++) {
             temp[i] = data[start + i];
@@ -405,38 +418,62 @@ contract ART is ERC165, IART {
         return temp;
     }
 
+    /**
+     * @dev Decodes a 32-byte record: {link(16b), value(80b), layer(32b), author(16b)}.
+     */
     function _decodeRecord(bytes memory record)
         internal
         pure
-        returns (uint24 val, uint16 aut, uint32 lay, bytes20 lk)
+        returns (bytes16 lk, uint80 val, uint32 lay, uint16 aut)
     {
-        require(record.length == 29, "Invalid record size");
+        require(record.length == 32, "Invalid record size");
 
-        val = (uint24(uint8(record[0])) << 16)
-            | (uint24(uint8(record[1])) << 8)
-            | uint24(uint8(record[2]));
-
-        aut = (uint16(uint8(record[3])) << 8)
-            | uint16(uint8(record[4]));
-
-        lay = (uint32(uint8(record[5])) << 24)
-            | (uint32(uint8(record[6])) << 16)
-            | (uint32(uint8(record[7])) << 8)
-            | uint32(uint8(record[8]));
-
-        bytes32 linkSlot;
+        // 1) link (first 16 bytes)
+        bytes memory linkPart = _sliceBytes(record, 0, 16);
         assembly {
-            linkSlot := mload(add(record, 0x20))
+            lk := mload(add(linkPart, 0x20))
         }
-        lk = bytes20(linkSlot << 96);
+
+        // 2) value (next 10 bytes => 80 bits)
+        bytes memory valuePart = _sliceBytes(record, 16, 10);
+        uint128 tmpVal;
+        assembly {
+            tmpVal := mload(add(valuePart, 0x20))
+        }
+        // shift right by (128 - 80) = 48 to move top 80 bits into lower bits
+        val = uint80(tmpVal >> 48);
+
+        // 3) layer (next 4 bytes => 32 bits)
+        bytes memory layerPart = _sliceBytes(record, 26, 4);
+        uint32 tmpLay;
+        assembly {
+            tmpLay := mload(add(layerPart, 0x20))
+        }
+        // shift out the unused (256 - 32 = 224)
+        lay = uint32(tmpLay >> 224);
+
+        // 4) author (last 2 bytes => 16 bits)
+        bytes memory authorPart = _sliceBytes(record, 30, 2);
+        uint256 tmpAut;
+        assembly {
+            tmpAut := mload(add(authorPart, 0x20))
+        }
+        // shift out the unused (256 - 16 = 240)
+        aut = uint16(tmpAut >> 240);
+
+        return (lk, val, lay, aut);
     }
 
+    /**
+     * @dev Register a user address => user ID if not already registered.
+     */
     function _registerUser(address user) internal returns (uint16) {
         uint16 id = userToId[user];
         if (id == 0) {
             require(nextUserId < 65535, "Too many cooks");
             userToId[user] = nextUserId;
             idToUser[nextUserId] = user;
+            id = nextUserId;
             nextUserId++;
         }
         return id;
