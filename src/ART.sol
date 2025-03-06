@@ -34,7 +34,7 @@ contract ART is ERC165, IART {
      *    | link(16b) | value(10b) | layer(4b) | author(2b) |
      */
     struct Tile {
-        bytes16 link;   // historical reference (truncated from 20 to 16 bytes)
+        bytes16 link;   // historical reference hash
         uint80  value;  // color/data (80 bits = up to 10 bytes)
         uint32  layer;  // incremental edit counter
         uint16  author; // user ID (1..65535)
