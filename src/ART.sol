@@ -29,16 +29,20 @@ contract ART is ERC165, IART {
     // =========================
 
     /**
-     * @notice Each tile on the artifact’s 2D grid.
-     *  32 bytes per slot:
-     *    | link(16b) | value(10b) | layer(4b) | author(2b) |
+     * @notice Each tile is exactly 32 bytes (256 bits).
+     *  Breakdown:
+     *   - value:      80 bits  (color/data)
+     *   - stamp:      64 bits  (block number when last edited)
+     *   - layer:      32 bits  (incremental edit counter)
+     *   - author:     160 bits (wallet address of last editor)
      */
     struct Tile {
-        bytes16 link;   // historical reference hash
-        uint80  value;  // color/data (80 bits = up to 10 bytes)
-        uint32  layer;  // incremental edit counter
-        uint16  author; // user ID (1..65535)
+        uint80 value;
+        uint64 stamp;
+        uint32 layer;
+        address author;
     }
+
 
     // =========================
     //     STORAGE
@@ -90,12 +94,6 @@ contract ART is ERC165, IART {
     mapping(uint16 => uint256) public cred;
 
     // =============== USER SYSTEM ===============
-    /** @notice address => user ID (1..65535). 0 => unregistered. */
-    mapping(address => uint16) public userToId;
-    /** @notice user ID => address. */
-    mapping(uint16 => address) public idToUser;
-    /** @notice next user ID to assign. */
-    uint16 public nextUserId = 1;
     /** @notice blacklisted user IDs => no further edits. */
     mapping(uint16 => bool) public blacklisted;
     /** @notice allowed artists if exclusive=true. (owner is always allowed) */
@@ -188,6 +186,64 @@ contract ART is ERC165, IART {
     }
 
     // =============== CORE LOGIC: EDIT ===============
+
+    /**
+     * @notice Edits the painting and records a new Merkle root for history.
+     *
+     * @param newRoot The Merkle root after applying the edit (computed off-chain).
+     * @param xs The x-coordinates of changed tiles.
+     * @param ys The y-coordinates of changed tiles.
+     * @param values The new values for each tile.
+     */
+    function edit(
+        bytes32 newRoot,
+        uint256[] calldata xs,
+        uint256[] calldata ys,
+        uint80[] calldata values
+    )
+        external
+        notFrozen
+        canEdit
+    {
+        uint256 numChanges = xs.length;
+        require(xs.length == ys.length && ys.length == values.length, "Array length mismatch");
+
+        // Process each tile edit
+        for (uint256 i = 0; i < numChanges; i++) {
+            uint256 x = xs[i];
+            uint256 y = ys[i];
+
+            Tile storage oldTile = canvas[x][y];
+
+            // Award cred to the previous tile author
+            uint256 blocksSurvived = block.number - oldTile.blockStamp;
+            cred[oldTile.author] += blocksSurvived;
+
+            // Update tile with new values and new author
+            canvas[x][y] = Tile({
+                value: values[i],
+                blockStamp: uint64(block.number),
+                layer: oldTile.layer + 1,
+                author: msg.sender
+            });
+
+            emit Update(x, y, values[i], msg.sender, oldTile.layer + 1);
+        }
+
+        // Increment global delta
+        delta += numChanges;
+        if (omega != 0 && delta >= omega) {
+            frozen = true;
+            emit Frozen(delta);
+        }
+
+        // Store new Merkle root for history tracking
+        currentRoot = newRoot;
+        editions[newRoot] = true;
+
+        emit EditMade(msg.sender, numChanges, newRoot);
+    }
+
 
     /**
      * @notice Edits multiple tiles. 
