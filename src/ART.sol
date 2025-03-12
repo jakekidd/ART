@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {ERC165} from "../lib/ERC165.sol";
+import {ERC165} from "../lib/oz-erc165/ERC165.sol";
 import {IART} from "./IART.sol";
 
 /**
